@@ -31,6 +31,17 @@ def save_config(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=4, ensure_ascii=False)
 
+def check_api_connection(config):
+    """Быстрая проверка доступности API для веб-интерфейса"""
+    login_url = f"{config['panel_url'].rstrip('/')}/login"
+    data = {"username": config['username'], "password": config['password']}
+    try:
+        # Таймаут 3 секунды, чтобы не вешать загрузку страницы
+        res = requests.post(login_url, data=data, timeout=3)
+        return res.status_code == 200
+    except:
+        return False
+
 app = Flask(__name__)
 
 HTML_TEMPLATE = '''
@@ -45,7 +56,7 @@ HTML_TEMPLATE = '''
         .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
         h1 { color: #2c3e50; font-size: 24px; border-bottom: 2px solid #ecf0f1; padding-bottom: 10px; margin-top: 0; }
         h2 { color: #34495e; font-size: 20px; margin-top: 25px; margin-bottom: 15px; }
-        .status-box { background-color: #e8f8f5; border-left: 5px solid #2ecc71; padding: 15px; border-radius: 6px; margin-bottom: 25px; font-size: 15px; line-height: 1.5; }
+        .status-box { background-color: #e8f8f5; border-left: 5px solid #2ecc71; padding: 15px; border-radius: 6px; margin-bottom: 25px; font-size: 15px; line-height: 1.6; }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 14px; color: #4a5568; }
         input[type="text"], input[type="number"], input[type="password"] { width: 100%; padding: 12px; border: 1px solid #cbd5e0; border-radius: 6px; box-sizing: border-box; font-size: 16px; transition: border-color 0.2s; }
@@ -59,6 +70,8 @@ HTML_TEMPLATE = '''
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e2e8f0; font-size: 15px; }
         th { background-color: #f8fafc; color: #4a5568; font-weight: 600; }
         .active-row { background-color: #ebf8ff; border-left: 3px solid #3498db; font-weight: bold; }
+        .badge-success { color: #27ae60; font-weight: bold; background: #e8f8f5; padding: 2px 8px; border-radius: 4px; }
+        .badge-error { color: #c0392b; font-weight: bold; background: #fce4d6; padding: 2px 8px; border-radius: 4px; }
         
         /* Медиа-запрос для мелких экранов */
         @media (min-width: 600px) {
@@ -72,7 +85,14 @@ HTML_TEMPLATE = '''
     <div class="container">
         <h1>Панель управления ARV Core</h1>
         
-        <div class="status-box">
+        <div class="status-box" style="{% if not api_connected %}border-left-color: #e74c3c;{% endif %}">
+            <strong>Связь с ядром (API):</strong> 
+            {% if api_connected %}
+                <span class="badge-success">Успешно подключено ✓</span>
+            {% else %}
+                <span class="badge-error">Ошибка авторизации / Нет связи ✗</span>
+            {% endif %}
+            <br>
             <strong>Текущий статус службы:</strong> Мониторинг активен.<br>
             <strong>Текущая конфигурация:</strong> {{ active_pair.sni if active_pair else 'Не выбрана' }} : {{ active_pair.port if active_pair else '-' }}
         </div>
@@ -99,7 +119,7 @@ HTML_TEMPLATE = '''
                 <label>Интервал проверки (сек):</label>
                 <input type="number" name="check_interval_seconds" value="{{ config.check_interval_seconds }}" required>
             </div>
-            <button type="submit">Сохранить настройки API</button>
+            <button type="submit">Сохранить настройки API и проверить связь</button>
         </form>
 
         <h2>2. Добавление в пул ротации</h2>
@@ -149,7 +169,9 @@ HTML_TEMPLATE = '''
 def index():
     config = load_config()
     active_pair = next((p for p in config['pairs'] if p.get('is_active')), None)
-    return render_template_string(HTML_TEMPLATE, config=config, active_pair=active_pair)
+    # Проверяем связь при загрузке страницы
+    api_connected = check_api_connection(config)
+    return render_template_string(HTML_TEMPLATE, config=config, active_pair=active_pair, api_connected=api_connected)
 
 @app.route('/add', methods=['POST'])
 def add_pair():
