@@ -4,6 +4,7 @@ import time
 import threading
 import requests
 import urllib3
+from urllib.parse import urlparse
 from flask import Flask, request, render_template_string
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -33,35 +34,66 @@ def save_config(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=4, ensure_ascii=False)
 
-def check_api_connection(config):
-    login_url = f"{config['panel_url'].rstrip('/')}/login"
-    payload = {
-        "username": config.get('username', '').strip(),
-        "password": config.get('password', '').strip()
-    }
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json"
-    }
-    session = requests.Session()
-    try:
-        # Отправляем данные формы (как браузер)
-        res = session.post(login_url, data=payload, timeout=8, verify=False, headers=headers)
-        if res.status_code == 200:
-            try:
-                result = res.json()
-                if result.get('success', False):
-                    return True, "Успешно подключено к 3X-UI!"
-                else:
-                    return False, f"Ответ 3X-UI: {result.get('msg', 'Неверный логин/пароль')}"
-            except:
-                return True, "Подключено (без JSON)"
-        else:
-            return False, f"Ошибка HTTP {res.status_code}: Убедитесь, что URL правильный"
-    except requests.exceptions.Timeout:
-        return False, "Таймаут: 3X-UI не ответила за 8 секунд"
-    except Exception as e:
-        return False, f"Ошибка соединения: {str(e)[:50]}"
+def get_working_session(config):
+    """Умная функция обхода защиты 3X-UI с подменой заголовков и маршрутов"""
+    username = config.get('username', '').strip()
+    password = config.get('password', '').strip()
+    raw_url = config.get('panel_url', '').rstrip('/')
+    
+    if not raw_url:
+        return None, None, None, "URL не указан"
+        
+    parsed = urlparse(raw_url)
+    original_host = parsed.netloc
+    port_str = f":{parsed.port}" if parsed.port else ""
+    local_url = f"{parsed.scheme}://127.0.0.1{port_str}{parsed.path}"
+    
+    # Сначала пробуем внешний адрес, если блокирует - идем через локалхост с подменой Host
+    urls_to_try = [
+        {"url": raw_url, "host_header": None},
+        {"url": local_url, "host_header": original_host}
+    ]
+    
+    last_error = "Нет связи"
+    for attempt in urls_to_try:
+        url = attempt['url']
+        try:
+            login_url = f"{url}/login"
+            payload = {"username": username, "password": password}
+            
+            # 100% имитация браузера и обход CSRF-защиты
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "X-Requested-With": "XMLHttpRequest",
+                "Origin": f"{parsed.scheme}://{original_host}",
+                "Referer": f"{raw_url}/"
+            }
+            if attempt['host_header']:
+                headers["Host"] = attempt['host_header']
+                
+            session = requests.Session()
+            res = session.post(login_url, data=payload, headers=headers, timeout=5, verify=False)
+            
+            if res.status_code == 200:
+                try:
+                    result = res.json()
+                    if result.get('success', False):
+                        return session, url, headers, "Успешно подключено к 3X-UI!"
+                    else:
+                        last_error = f"Ответ 3X-UI: {result.get('msg', 'Неверный логин/пароль')}"
+                except:
+                    return session, url, headers, "Подключено (Без JSON)"
+            elif res.status_code == 404:
+                last_error = f"Ошибка 404: Проверьте правильность WebBasePath"
+            elif res.status_code == 403:
+                last_error = f"Ошибка 403: Защита 3X-UI заблокировала вход ({'Внешний IP' if not attempt['host_header'] else 'Локальный IP'})"
+            else:
+                last_error = f"Ошибка HTTP {res.status_code}"
+        except Exception as e:
+            last_error = f"Сетевая ошибка: {str(e)[:30]}"
+            
+    return None, None, None, last_error
 
 app = Flask(__name__)
 
@@ -109,7 +141,7 @@ HTML_TEMPLATE = '''
                 <span class="badge-error">{{ api_msg }} ✗</span>
             {% endif %}
             <br>
-            <strong>Текущий статус:</strong> Мониторинг активен.<br>
+            <strong>Текущий статус службы:</strong> Мониторинг активен.<br>
             <strong>Текущая конфигурация:</strong> {{ active_pair.sni if active_pair else 'Не выбрана' }} : {{ active_pair.port if active_pair else '-' }}
         </div>
 
@@ -185,7 +217,8 @@ HTML_TEMPLATE = '''
 def index():
     config = load_config()
     active_pair = next((p for p in config['pairs'] if p.get('is_active')), None)
-    api_connected, api_msg = check_api_connection(config)
+    _, _, _, api_msg = get_working_session(config)
+    api_connected = "Успешно" in api_msg
     edit_mode = request.args.get('edit') == '1'
     return render_template_string(HTML_TEMPLATE, config=config, active_pair=active_pair, api_connected=api_connected, api_msg=api_msg, edit_mode=edit_mode)
 
@@ -217,49 +250,47 @@ def save_settings():
     save_config(config)
     return '<script>window.location.href="/";</script>'
 
-def core_api_request(config, active_session, endpoint, data=None):
-    url = f"{config['panel_url'].rstrip('/')}{endpoint}"
-    headers = {"Accept": "application/json"}
-    try:
-        if data:
-            res = active_session.post(url, data=data, timeout=5, verify=False, headers=headers)
-        else:
-            res = active_session.post(url, timeout=5, verify=False, headers=headers)
-        return res.json()
-    except:
-        return None
-
-def login_to_core(config, session):
-    login_url = f"{config['panel_url'].rstrip('/')}/login"
-    payload = {"username": config.get('username', '').strip(), "password": config.get('password', '').strip()}
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        res = session.post(login_url, data=payload, timeout=5, verify=False, headers=headers)
-        return res.status_code == 200 and res.json().get('success', False)
-    except:
-        return False
-
 def rotate_stream(config, next_pair):
-    session = requests.Session()
-    if not login_to_core(config, session):
+    session, working_url, headers, _ = get_working_session(config)
+    if not session:
+        print("[ARV Worker] Ошибка авторизации в API")
         return False
-    get_url = f"/panel/api/inbounds/get/{config['inbound_id']}"
-    stream_data = core_api_request(config, session, get_url)
+        
+    get_url = f"{working_url}/panel/api/inbounds/get/{config['inbound_id']}"
+    
+    # Пытаемся получить данные потока (сначала GET, резерв POST)
+    res = session.get(get_url, headers=headers, timeout=5, verify=False)
+    if res.status_code != 200:
+        res = session.post(get_url, headers=headers, timeout=5, verify=False)
+        
+    if res.status_code != 200:
+        return False
+        
+    stream_data = res.json()
     if not stream_data or not stream_data.get('success'):
         return False
+        
     obj = stream_data['obj']
+    
     try:
         stream_settings = json.loads(obj['streamSettings'])
         if 'realitySettings' in stream_settings:
             stream_settings['realitySettings']['serverNames'] = [next_pair['sni']]
             stream_settings['realitySettings']['dest'] = f"{next_pair['sni']}:443"
         obj['streamSettings'] = json.dumps(stream_settings)
-    except:
+    except Exception as e:
+        print(f"[ARV Worker] Ошибка парсинга: {e}")
         return False
+
     obj['port'] = next_pair['port']
-    update_url = f"/panel/api/inbounds/update/{config['inbound_id']}"
-    update_res = core_api_request(config, session, update_url, data=obj)
-    return update_res and update_res.get('success')
+    
+    update_url = f"{working_url}/panel/api/inbounds/update/{config['inbound_id']}"
+    update_res = session.post(update_url, data=obj, headers=headers, timeout=5, verify=False)
+    
+    if update_res.status_code == 200 and update_res.json().get('success'):
+        print(f"[ARV Worker] Переключено на {next_pair['sni']}:{next_pair['port']}")
+        return True
+    return False
 
 def check_connection_health(port):
     import socket
@@ -280,21 +311,31 @@ def rotation_worker():
             if not pairs:
                 time.sleep(10)
                 continue
+                
             active_pair = next((p for p in pairs if p.get('is_active')), None)
+            
             if not active_pair:
                 pairs[0]['is_active'] = True
                 save_config(config)
                 rotate_stream(config, pairs[0])
                 active_pair = pairs[0]
-            if not check_connection_health(active_pair['port']):
+
+            is_healthy = check_connection_health(active_pair['port'])
+            
+            if not is_healthy:
+                print(f"[ARV Worker] Обнаружена недоступность порта {active_pair['port']}. Инициализация ротации...")
                 curr_idx = pairs.index(active_pair)
                 pairs[curr_idx]['is_active'] = False
+                
                 next_idx = (curr_idx + 1) % len(pairs)
                 pairs[next_idx]['is_active'] = True
+                
                 save_config(config)
                 rotate_stream(config, pairs[next_idx])
-        except:
+                
+        except Exception as e:
             pass
+            
         config = load_config()
         time.sleep(config.get('check_interval_seconds', 300))
 
