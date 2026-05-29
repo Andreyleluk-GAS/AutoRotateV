@@ -276,3 +276,9 @@ def rotation_worker():
         time.sleep(config.get('check_interval_seconds', 300))
 
 if __name__ == '__main__':
+    t = threading.Thread(target=rotation_worker, daemon=True)
+    t.start()
+    
+    # Получаем случайный порт от системы, либо используем 5000 как резервный
+    panel_port = int(os.environ.get('ARV_PORT', 5000))
+    app.run(host='0.0.0.0', port=panel_port)
