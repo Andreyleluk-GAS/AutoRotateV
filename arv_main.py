@@ -6,7 +6,6 @@ import requests
 import urllib3
 from flask import Flask, request, render_template_string
 
-# Отключаем предупреждения о сертификатах
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 CONFIG_FILE = 'arv_config.json'
@@ -18,7 +17,7 @@ DEFAULT_CONFIG = {
     "inbound_id": 1,
     "check_interval_seconds": 300,
     "pairs": [
-        {"sni": "www.apple.com", "port": 44343, "is_active": False}
+        {"sni": "www.microsoft.com", "port": 44343, "is_active": False}
     ]
 }
 
@@ -35,37 +34,34 @@ def save_config(config):
         json.dump(config, f, indent=4, ensure_ascii=False)
 
 def check_api_connection(config):
-    """Проверка связи с использованием полноценной сессии, как в 3dp-manager"""
     login_url = f"{config['panel_url'].rstrip('/')}/login"
-    
     payload = {
         "username": config.get('username', '').strip(),
         "password": config.get('password', '').strip()
     }
-    
     headers = {
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json"
     }
-    
-    # Используем сессию для захвата куки (как curl -c в bash-скриптах)
     session = requests.Session()
     try:
+        # Отправляем данные формы (как браузер)
         res = session.post(login_url, data=payload, timeout=8, verify=False, headers=headers)
         if res.status_code == 200:
             try:
                 result = res.json()
                 if result.get('success', False):
-                    return True, "OK"
+                    return True, "Успешно подключено к 3X-UI!"
                 else:
-                    return False, f"3X-UI: {result.get('msg', 'Неверный логин/пароль')}"
+                    return False, f"Ответ 3X-UI: {result.get('msg', 'Неверный логин/пароль')}"
             except:
-                return True, "OK"
+                return True, "Подключено (без JSON)"
         else:
-            return False, f"Ошибка HTTP {res.status_code}. Проверьте адрес."
+            return False, f"Ошибка HTTP {res.status_code}: Убедитесь, что URL правильный"
+    except requests.exceptions.Timeout:
+        return False, "Таймаут: 3X-UI не ответила за 8 секунд"
     except Exception as e:
-        return False, f"Ошибка соединения: {str(e)}"
+        return False, f"Ошибка соединения: {str(e)[:50]}"
 
 app = Flask(__name__)
 
@@ -92,19 +88,13 @@ HTML_TEMPLATE = '''
         button.edit-btn:hover { background-color: #95a5a6; }
         button.delete { background-color: #e74c3c; padding: 8px 12px; font-size: 14px; width: auto; }
         button.delete:hover { background-color: #c0392b; }
-        .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-top: 10px; border-radius: 6px; }
-        table { width: 100%; border-collapse: collapse; min-width: 400px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e2e8f0; font-size: 15px; }
         th { background-color: #f8fafc; color: #4a5568; font-weight: 600; }
         .active-row { background-color: #ebf8ff; border-left: 3px solid #3498db; font-weight: bold; }
         .badge-success { color: #27ae60; font-weight: bold; background: #e8f8f5; padding: 2px 8px; border-radius: 4px; display: inline-block; }
         .badge-error { color: #c0392b; font-weight: bold; background: #fce4d6; padding: 2px 8px; border-radius: 4px; display: inline-block; }
-        
-        @media (min-width: 600px) {
-            button { width: auto; }
-            body { padding: 20px; }
-            .container { padding: 30px; }
-        }
+        @media (min-width: 600px) { button { width: auto; } body { padding: 20px; } .container { padding: 30px; } }
     </style>
 </head>
 <body>
@@ -114,20 +104,19 @@ HTML_TEMPLATE = '''
         <div class="status-box" style="{% if not api_connected %}border-left-color: #e74c3c;{% endif %}">
             <strong>Связь с ядром (API):</strong> 
             {% if api_connected %}
-                <span class="badge-success">Успешно подключено ✓</span>
+                <span class="badge-success">{{ api_msg }} ✓</span>
             {% else %}
-                <span class="badge-error">{{ api_error }} ✗</span>
+                <span class="badge-error">{{ api_msg }} ✗</span>
             {% endif %}
             <br>
-            <strong>Текущий статус службы:</strong> Мониторинг активен.<br>
+            <strong>Текущий статус:</strong> Мониторинг активен.<br>
             <strong>Текущая конфигурация:</strong> {{ active_pair.sni if active_pair else 'Не выбрана' }} : {{ active_pair.port if active_pair else '-' }}
         </div>
 
         <h2>1. Настройки доступа к ядру (API)</h2>
-        
         {% if api_connected and not edit_mode %}
             <div style="background: #f8fafc; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0; border-left: 5px solid #3498db;">
-                <p style="margin: 0 0 10px 0; color: #2c3e50;"><strong>Сервер 3X-UI:</strong> {{ config.panel_url }}</p>
+                <p style="margin: 0 0 10px 0; color: #2c3e50;"><strong>Сервер:</strong> {{ config.panel_url }}</p>
                 <p style="margin: 0 0 10px 0; color: #2c3e50;"><strong>ID потока:</strong> {{ config.inbound_id }} | <strong>Интервал:</strong> {{ config.check_interval_seconds }} сек.</p>
                 <a href="/?edit=1"><button class="edit-btn">Изменить настройки</button></a>
             </div>
@@ -146,11 +135,11 @@ HTML_TEMPLATE = '''
                     <input type="password" name="password" value="{{ config.password }}" required>
                 </div>
                 <div class="form-group">
-                    <label>Идентификатор потока (ID):</label>
+                    <label>ID потока:</label>
                     <input type="number" name="inbound_id" value="{{ config.inbound_id }}" required>
                 </div>
                 <div class="form-group">
-                    <label>Интервал проверки (сек):</label>
+                    <label>Интервал (сек):</label>
                     <input type="number" name="check_interval_seconds" value="{{ config.check_interval_seconds }}" required>
                 </div>
                 <button type="submit">Сохранить и подключиться</button>
@@ -170,26 +159,18 @@ HTML_TEMPLATE = '''
             <button type="submit" style="background-color: #2ecc71;">Добавить комбинацию</button>
         </form>
 
-        <h2>3. Активный пул комбинаций</h2>
-        <div class="table-responsive">
+        <h2>3. Активный пул</h2>
+        <div style="overflow-x: auto;">
             <table>
                 <thead>
-                    <tr>
-                        <th>Хост (SNI)</th>
-                        <th>Порт</th>
-                        <th>Статус</th>
-                        <th>Удалить</th>
-                    </tr>
+                    <tr><th>Хост (SNI)</th><th>Порт</th><th>Статус</th><th>Удалить</th></tr>
                 </thead>
                 <tbody>
                     {% for pair in config.pairs %}
                     <tr class="{% if pair.is_active %}active-row{% endif %}">
-                        <td>{{ pair.sni }}</td>
-                        <td>{{ pair.port }}</td>
+                        <td>{{ pair.sni }}</td><td>{{ pair.port }}</td>
                         <td>{{ 'АКТИВЕН' if pair.is_active else 'Ожидание' }}</td>
-                        <td>
-                            <a href="/delete/{{ loop.index0 }}"><button class="delete">×</button></a>
-                        </td>
+                        <td><a href="/delete/{{ loop.index0 }}"><button class="delete">×</button></a></td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -204,9 +185,9 @@ HTML_TEMPLATE = '''
 def index():
     config = load_config()
     active_pair = next((p for p in config['pairs'] if p.get('is_active')), None)
-    api_connected, api_error = check_api_connection(config)
+    api_connected, api_msg = check_api_connection(config)
     edit_mode = request.args.get('edit') == '1'
-    return render_template_string(HTML_TEMPLATE, config=config, active_pair=active_pair, api_connected=api_connected, api_error=api_error, edit_mode=edit_mode)
+    return render_template_string(HTML_TEMPLATE, config=config, active_pair=active_pair, api_connected=api_connected, api_msg=api_msg, edit_mode=edit_mode)
 
 @app.route('/add', methods=['POST'])
 def add_pair():
@@ -236,7 +217,6 @@ def save_settings():
     save_config(config)
     return '<script>window.location.href="/";</script>'
 
-# Логика фонового воркера ротации
 def core_api_request(config, active_session, endpoint, data=None):
     url = f"{config['panel_url'].rstrip('/')}{endpoint}"
     headers = {"Accept": "application/json"}
@@ -246,63 +226,40 @@ def core_api_request(config, active_session, endpoint, data=None):
         else:
             res = active_session.post(url, timeout=5, verify=False, headers=headers)
         return res.json()
-    except Exception as e:
-        print(f"[Ошибка API]: {e}")
+    except:
         return None
 
 def login_to_core(config, session):
     login_url = f"{config['panel_url'].rstrip('/')}/login"
-    payload = {
-        "username": config.get('username', '').strip(),
-        "password": config.get('password', '').strip()
-    }
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
+    payload = {"username": config.get('username', '').strip(), "password": config.get('password', '').strip()}
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
         res = session.post(login_url, data=payload, timeout=5, verify=False, headers=headers)
-        if res.status_code == 200:
-            return res.json().get('success', False)
-        return False
+        return res.status_code == 200 and res.json().get('success', False)
     except:
         return False
 
 def rotate_stream(config, next_pair):
     session = requests.Session()
     if not login_to_core(config, session):
-        print("[ARV Worker] Ошибка авторизации в API ядра")
         return False
-    
     get_url = f"/panel/api/inbounds/get/{config['inbound_id']}"
     stream_data = core_api_request(config, session, get_url)
     if not stream_data or not stream_data.get('success'):
-        print("[ARV Worker] Не удалось получить данные потока")
         return False
-    
     obj = stream_data['obj']
-    
     try:
         stream_settings = json.loads(obj['streamSettings'])
         if 'realitySettings' in stream_settings:
             stream_settings['realitySettings']['serverNames'] = [next_pair['sni']]
             stream_settings['realitySettings']['dest'] = f"{next_pair['sni']}:443"
         obj['streamSettings'] = json.dumps(stream_settings)
-    except Exception as e:
-        print(f"[ARV Worker] Ошибка разбора конфигурации: {e}")
+    except:
         return False
-
     obj['port'] = next_pair['port']
-    
     update_url = f"/panel/api/inbounds/update/{config['inbound_id']}"
     update_res = core_api_request(config, session, update_url, data=obj)
-    
-    if update_res and update_res.get('success'):
-        print(f"[ARV Worker] Успешное переключение на конфигурацию {next_pair['sni']}:{next_pair['port']}")
-        return True
-    else:
-        print("[ARV Worker] Не удалось обновить поток через API")
-        return False
+    return update_res and update_res.get('success')
 
 def check_connection_health(port):
     import socket
@@ -323,37 +280,25 @@ def rotation_worker():
             if not pairs:
                 time.sleep(10)
                 continue
-                
             active_pair = next((p for p in pairs if p.get('is_active')), None)
-            
             if not active_pair:
                 pairs[0]['is_active'] = True
                 save_config(config)
                 rotate_stream(config, pairs[0])
                 active_pair = pairs[0]
-
-            is_healthy = check_connection_health(active_pair['port'])
-            
-            if not is_healthy:
-                print(f"[ARV Worker] Обнаружена недоступность порта {active_pair['port']}. Инициализация ротации...")
+            if not check_connection_health(active_pair['port']):
                 curr_idx = pairs.index(active_pair)
                 pairs[curr_idx]['is_active'] = False
-                
                 next_idx = (curr_idx + 1) % len(pairs)
                 pairs[next_idx]['is_active'] = True
-                
                 save_config(config)
                 rotate_stream(config, pairs[next_idx])
-                
-        except Exception as e:
-            print(f"[ARV Worker Критическая ошибка]: {e}")
-            
+        except:
+            pass
         config = load_config()
         time.sleep(config.get('check_interval_seconds', 300))
 
 if __name__ == '__main__':
     t = threading.Thread(target=rotation_worker, daemon=True)
     t.start()
-    
-    panel_port = int(os.environ.get('ARV_PORT', 5000))
-    app.run(host='0.0.0.0', port=panel_port)
+    app.run(host='0.0.0.0', port=int(os.environ.get('ARV_PORT', 5000)))
