@@ -4,14 +4,19 @@ import time
 import threading
 import requests
 import urllib3
+import sys
 from urllib.parse import urlparse
 from flask import Flask, request, render_template_string
 
-# Отключаем предупреждения о нестрогих SSL-сертификатах при локальных запросах
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Конфигурационный файл
 CONFIG_FILE = 'arv_config.json'
+
+# Маскируемся под обычный браузер Chrome (обход защиты 3X-UI)
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*"
+}
 
 DEFAULT_CONFIG = {
     "panel_url": "http://127.0.0.1:2053",
@@ -32,7 +37,6 @@ def load_config():
         return DEFAULT_CONFIG
     with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
         config = json.load(f)
-        # Поддержка старых конфигов без display_url
         if 'display_url' not in config:
             config['display_url'] = config.get('panel_url', '')
         return config
@@ -42,15 +46,19 @@ def save_config(config):
         json.dump(config, f, indent=4, ensure_ascii=False)
 
 def check_api_connection(config):
-    """Быстрая проверка доступности API для веб-интерфейса"""
     login_url = f"{config['panel_url'].rstrip('/')}/login"
     data = {"username": config['username'], "password": config['password']}
     try:
-        # Увеличен таймаут и добавлено игнорирование SSL (verify=False)
-        res = requests.post(login_url, data=data, timeout=5, verify=False)
-        return res.status_code == 200
+        res = requests.post(login_url, data=data, timeout=5, verify=False, headers=HEADERS)
+        if res.status_code == 200:
+            try:
+                # 3X-UI возвращает 200 даже при неверном пароле, нужно проверить success: true
+                return res.json().get('success', False)
+            except:
+                return True
+        return False
     except Exception as e:
-        print(f"Connection check error: {e}")
+        print(f"Connection error: {e}", file=sys.stderr)
         return False
 
 app = Flask(__name__)
@@ -229,7 +237,6 @@ def save_settings():
         try:
             parsed = urlparse(raw_url)
             port_str = f":{parsed.port}" if parsed.port else ""
-            # Заменяем домен на 127.0.0.1 для локального внутреннего доступа
             config['panel_url'] = f"{parsed.scheme}://127.0.0.1{port_str}{parsed.path}"
         except:
             config['panel_url'] = raw_url
@@ -248,9 +255,9 @@ def core_api_request(config, active_session, endpoint, data=None):
     url = f"{config['panel_url'].rstrip('/')}{endpoint}"
     try:
         if data:
-            res = active_session.post(url, data=data, timeout=5, verify=False)
+            res = active_session.post(url, data=data, timeout=5, verify=False, headers=HEADERS)
         else:
-            res = active_session.post(url, timeout=5, verify=False)
+            res = active_session.post(url, timeout=5, verify=False, headers=HEADERS)
         return res.json()
     except Exception as e:
         print(f"[Ошибка API]: {e}")
@@ -260,8 +267,10 @@ def login_to_core(config, session):
     login_url = f"{config['panel_url'].rstrip('/')}/login"
     data = {"username": config['username'], "password": config['password']}
     try:
-        res = session.post(login_url, data=data, timeout=5, verify=False)
-        return res.status_code == 200
+        res = session.post(login_url, data=data, timeout=5, verify=False, headers=HEADERS)
+        if res.status_code == 200:
+            return res.json().get('success', False)
+        return False
     except:
         return False
 
@@ -271,7 +280,6 @@ def rotate_stream(config, next_pair):
         print("[ARV Worker] Ошибка авторизации в API ядра")
         return False
     
-    # Получаем текущие настройки потока
     get_url = f"/panel/api/inbounds/get/{config['inbound_id']}"
     stream_data = core_api_request(config, session, get_url)
     if not stream_data or not stream_data.get('success'):
