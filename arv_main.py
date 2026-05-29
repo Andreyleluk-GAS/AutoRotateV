@@ -9,15 +9,13 @@ from flask import Flask, request, render_template_string
 CONFIG_FILE = 'arv_config.json'
 
 DEFAULT_CONFIG = {
-    "panel_url": "http://127.0.0.1:2053",
+    "panel_url": "http://127.0.0.1:12213/RBFAU7dIX2RqY7ecla",
     "username": "admin",
     "password": "password",
     "inbound_id": 1,
     "check_interval_seconds": 300,
     "pairs": [
-        {"sni": "www.microsoft.com", "port": 44343, "is_active": False},
-        {"sni": "www.apple.com", "port": 44344, "is_active": False},
-        {"sni": "www.samsung.com", "port": 44345, "is_active": False}
+        {"sni": "www.microsoft.com", "port": 44343, "is_active": False}
     ]
 }
 
@@ -40,24 +38,34 @@ HTML_TEMPLATE = '''
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>ARV Core Control Panel</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ARV Core Control</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; margin: 0; padding: 20px; color: #333; }
-        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        h1 { color: #2c3e50; border-bottom: 2px solid #ecf0f1; padding-bottom: 10px; }
-        h2 { color: #34495e; margin-top: 30px; }
-        .status-box { background-color: #e8f8f5; border-left: 5px solid #2ecc71; padding: 15px; border-radius: 4px; margin-bottom: 20px; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; margin: 0; padding: 10px; color: #333; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        h1 { color: #2c3e50; font-size: 24px; border-bottom: 2px solid #ecf0f1; padding-bottom: 10px; margin-top: 0; }
+        h2 { color: #34495e; font-size: 20px; margin-top: 25px; margin-bottom: 15px; }
+        .status-box { background-color: #e8f8f5; border-left: 5px solid #2ecc71; padding: 15px; border-radius: 6px; margin-bottom: 25px; font-size: 15px; line-height: 1.5; }
         .form-group { margin-bottom: 15px; }
-        label { display: block; margin-bottom: 5px; font-weight: bold; }
-        input[type="text"], input[type="number"], input[type="password"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
-        button { background-color: #3498db; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 14px; color: #4a5568; }
+        input[type="text"], input[type="number"], input[type="password"] { width: 100%; padding: 12px; border: 1px solid #cbd5e0; border-radius: 6px; box-sizing: border-box; font-size: 16px; transition: border-color 0.2s; }
+        input:focus { border-color: #3498db; outline: none; }
+        button { background-color: #3498db; color: white; padding: 14px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: 600; width: 100%; transition: background-color 0.2s; }
         button:hover { background-color: #2980b9; }
-        button.delete { background-color: #e74c3c; padding: 5px 10px; font-size: 14px; }
+        button.delete { background-color: #e74c3c; padding: 8px 12px; font-size: 14px; width: auto; }
         button.delete:hover { background-color: #c0392b; }
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
-        th { background-color: #f8f9fa; }
-        .active-row { background-color: #e8f4f8; font-weight: bold; }
+        .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-top: 10px; border-radius: 6px; }
+        table { width: 100%; border-collapse: collapse; min-width: 400px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e2e8f0; font-size: 15px; }
+        th { background-color: #f8fafc; color: #4a5568; font-weight: 600; }
+        .active-row { background-color: #ebf8ff; border-left: 3px solid #3498db; font-weight: bold; }
+        
+        /* Медиа-запрос для мелких экранов */
+        @media (min-width: 600px) {
+            button { width: auto; }
+            body { padding: 20px; }
+            .container { padding: 30px; }
+        }
     </style>
 </head>
 <body>
@@ -65,51 +73,14 @@ HTML_TEMPLATE = '''
         <h1>Панель управления ARV Core</h1>
         
         <div class="status-box">
-            <strong>Текущий статус службы:</strong> Мониторинг активен. <br>
+            <strong>Текущий статус службы:</strong> Мониторинг активен.<br>
             <strong>Текущая конфигурация:</strong> {{ active_pair.sni if active_pair else 'Не выбрана' }} : {{ active_pair.port if active_pair else '-' }}
         </div>
 
-        <h2>Добавить новую комбинацию Host + Порт</h2>
-        <form action="/add" method="POST">
+        <h2>1. Настройки доступа к ядру (API)</h2>
+        <form action="/save_settings" method="POST" style="background: #f8fafc; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0;">
             <div class="form-group">
-                <label>Хост (SNI):</label>
-                <input type="text" name="sni" placeholder="например, www.google.com" required>
-            </div>
-            <div class="form-group">
-                <label>Порт:</label>
-                <input type="number" name="port" placeholder="например, 44343" required>
-            </div>
-            <button type="submit">Добавить в пул ротации</button>
-        </form>
-
-        <h2>Пул комбинаций для перебора</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Хост (SNI)</th>
-                    <th>Порт</th>
-                    <th>Статус</th>
-                    <th>Действие</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for pair in config.pairs %}
-                <tr class="{% if pair.is_active %}active-row{% endif %}">
-                    <td>{{ pair.sni }}</td>
-                    <td>{{ pair.port }}</td>
-                    <td>{{ 'АКТИВЕН' if pair.is_active else 'В ожидании' }}</td>
-                    <td>
-                        <a href="/delete/{{ loop.index0 }}"><button class="delete">Удалить</button></a>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-
-        <h2>Настройки доступа к ядру (API)</h2>
-        <form action="/save_settings" method="POST">
-            <div class="form-group">
-                <label>API URL:</label>
+                <label>API URL (включая WebBasePath):</label>
                 <input type="text" name="panel_url" value="{{ config.panel_url }}" required>
             </div>
             <div class="form-group">
@@ -125,11 +96,50 @@ HTML_TEMPLATE = '''
                 <input type="number" name="inbound_id" value="{{ config.inbound_id }}" required>
             </div>
             <div class="form-group">
-                <label>Интервал проверки (в секундах):</label>
+                <label>Интервал проверки (сек):</label>
                 <input type="number" name="check_interval_seconds" value="{{ config.check_interval_seconds }}" required>
             </div>
-            <button type="submit">Сохранить настройки доступа</button>
+            <button type="submit">Сохранить настройки API</button>
         </form>
+
+        <h2>2. Добавление в пул ротации</h2>
+        <form action="/add" method="POST">
+            <div class="form-group">
+                <label>Хост (SNI):</label>
+                <input type="text" name="sni" placeholder="например, www.apple.com" required>
+            </div>
+            <div class="form-group">
+                <label>Порт:</label>
+                <input type="number" name="port" placeholder="например, 44343" required>
+            </div>
+            <button type="submit" style="background-color: #2ecc71;">Добавить комбинацию</button>
+        </form>
+
+        <h2>3. Активный пул комбинаций</h2>
+        <div class="table-responsive">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Хост (SNI)</th>
+                        <th>Порт</th>
+                        <th>Статус</th>
+                        <th>Удалить</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for pair in config.pairs %}
+                    <tr class="{% if pair.is_active %}active-row{% endif %}">
+                        <td>{{ pair.sni }}</td>
+                        <td>{{ pair.port }}</td>
+                        <td>{{ 'АКТИВЕН' if pair.is_active else 'Ожидание' }}</td>
+                        <td>
+                            <a href="/delete/{{ loop.index0 }}"><button class="delete">×</button></a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
     </div>
 </body>
 </html>
@@ -279,6 +289,5 @@ if __name__ == '__main__':
     t = threading.Thread(target=rotation_worker, daemon=True)
     t.start()
     
-    # Получаем случайный порт от системы, либо используем 5000 как резервный
     panel_port = int(os.environ.get('ARV_PORT', 5000))
     app.run(host='0.0.0.0', port=panel_port)
