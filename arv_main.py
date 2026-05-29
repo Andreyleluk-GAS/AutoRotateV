@@ -3,13 +3,19 @@ import json
 import time
 import threading
 import requests
+import urllib3
+from urllib.parse import urlparse
 from flask import Flask, request, render_template_string
+
+# Отключаем предупреждения о нестрогих SSL-сертификатах при локальных запросах
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Конфигурационный файл
 CONFIG_FILE = 'arv_config.json'
 
 DEFAULT_CONFIG = {
-    "panel_url": "http://127.0.0.1:12213/RBFAU7dIX2RqY7ecla",
+    "panel_url": "http://127.0.0.1:2053",
+    "display_url": "http://127.0.0.1:2053",
     "username": "admin",
     "password": "password",
     "inbound_id": 1,
@@ -25,7 +31,11 @@ def load_config():
             json.dump(DEFAULT_CONFIG, f, indent=4, ensure_ascii=False)
         return DEFAULT_CONFIG
     with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+        config = json.load(f)
+        # Поддержка старых конфигов без display_url
+        if 'display_url' not in config:
+            config['display_url'] = config.get('panel_url', '')
+        return config
 
 def save_config(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -36,10 +46,11 @@ def check_api_connection(config):
     login_url = f"{config['panel_url'].rstrip('/')}/login"
     data = {"username": config['username'], "password": config['password']}
     try:
-        # Таймаут 3 секунды, чтобы не вешать загрузку страницы
-        res = requests.post(login_url, data=data, timeout=3)
+        # Увеличен таймаут и добавлено игнорирование SSL (verify=False)
+        res = requests.post(login_url, data=data, timeout=5, verify=False)
         return res.status_code == 200
-    except:
+    except Exception as e:
+        print(f"Connection check error: {e}")
         return False
 
 app = Flask(__name__)
@@ -63,6 +74,8 @@ HTML_TEMPLATE = '''
         input:focus { border-color: #3498db; outline: none; }
         button { background-color: #3498db; color: white; padding: 14px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: 600; width: 100%; transition: background-color 0.2s; }
         button:hover { background-color: #2980b9; }
+        button.edit-btn { background-color: #7f8c8d; width: auto; padding: 8px 15px; font-size: 14px; margin-top: 10px; }
+        button.edit-btn:hover { background-color: #95a5a6; }
         button.delete { background-color: #e74c3c; padding: 8px 12px; font-size: 14px; width: auto; }
         button.delete:hover { background-color: #c0392b; }
         .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-top: 10px; border-radius: 6px; }
@@ -70,10 +83,9 @@ HTML_TEMPLATE = '''
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e2e8f0; font-size: 15px; }
         th { background-color: #f8fafc; color: #4a5568; font-weight: 600; }
         .active-row { background-color: #ebf8ff; border-left: 3px solid #3498db; font-weight: bold; }
-        .badge-success { color: #27ae60; font-weight: bold; background: #e8f8f5; padding: 2px 8px; border-radius: 4px; }
-        .badge-error { color: #c0392b; font-weight: bold; background: #fce4d6; padding: 2px 8px; border-radius: 4px; }
+        .badge-success { color: #27ae60; font-weight: bold; background: #e8f8f5; padding: 2px 8px; border-radius: 4px; display: inline-block; }
+        .badge-error { color: #c0392b; font-weight: bold; background: #fce4d6; padding: 2px 8px; border-radius: 4px; display: inline-block; }
         
-        /* Медиа-запрос для мелких экранов */
         @media (min-width: 600px) {
             button { width: auto; }
             body { padding: 20px; }
@@ -98,29 +110,44 @@ HTML_TEMPLATE = '''
         </div>
 
         <h2>1. Настройки доступа к ядру (API)</h2>
-        <form action="/save_settings" method="POST" style="background: #f8fafc; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0;">
-            <div class="form-group">
-                <label>API URL (включая WebBasePath):</label>
-                <input type="text" name="panel_url" value="{{ config.panel_url }}" required>
+        
+        {% if api_connected and not edit_mode %}
+            <div style="background: #f8fafc; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0; border-left: 5px solid #3498db;">
+                <p style="margin: 0 0 10px 0; color: #2c3e50;"><strong>Сервер 3X-UI:</strong> {{ config.display_url }}</p>
+                <p style="margin: 0 0 10px 0; color: #2c3e50;"><strong>ID потока:</strong> {{ config.inbound_id }} | <strong>Интервал:</strong> {{ config.check_interval_seconds }} сек.</p>
+                <a href="/?edit=1"><button class="edit-btn">Изменить настройки</button></a>
             </div>
-            <div class="form-group">
-                <label>Логин:</label>
-                <input type="text" name="username" value="{{ config.username }}" required>
-            </div>
-            <div class="form-group">
-                <label>Пароль:</label>
-                <input type="password" name="password" value="{{ config.password }}" required>
-            </div>
-            <div class="form-group">
-                <label>Идентификатор потока (ID):</label>
-                <input type="number" name="inbound_id" value="{{ config.inbound_id }}" required>
-            </div>
-            <div class="form-group">
-                <label>Интервал проверки (сек):</label>
-                <input type="number" name="check_interval_seconds" value="{{ config.check_interval_seconds }}" required>
-            </div>
-            <button type="submit">Сохранить настройки API и проверить связь</button>
-        </form>
+        {% else %}
+            <form action="/save_settings" method="POST" style="background: #f8fafc; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0;">
+                <div class="form-group">
+                    <label>Внешний URL панели (например, https://like.dmtr.ru:12213/path):</label>
+                    <input type="text" name="panel_url" value="{{ config.display_url }}" required>
+                </div>
+                
+                <div class="form-group" style="display: flex; align-items: center; background: #e8f4f8; padding: 10px; border-radius: 6px;">
+                    <input type="checkbox" name="is_local" id="is_local" style="width: 20px; height: 20px; margin-right: 10px;" checked>
+                    <label for="is_local" style="margin-bottom: 0; cursor: pointer; color: #2980b9;">ARV и 3X-UI на одном сервере (авто-адаптация адреса)</label>
+                </div>
+
+                <div class="form-group">
+                    <label>Логин:</label>
+                    <input type="text" name="username" value="{{ config.username }}" required>
+                </div>
+                <div class="form-group">
+                    <label>Пароль:</label>
+                    <input type="password" name="password" value="{{ config.password }}" required>
+                </div>
+                <div class="form-group">
+                    <label>Идентификатор потока (ID):</label>
+                    <input type="number" name="inbound_id" value="{{ config.inbound_id }}" required>
+                </div>
+                <div class="form-group">
+                    <label>Интервал проверки (сек):</label>
+                    <input type="number" name="check_interval_seconds" value="{{ config.check_interval_seconds }}" required>
+                </div>
+                <button type="submit">Сохранить и подключиться</button>
+            </form>
+        {% endif %}
 
         <h2>2. Добавление в пул ротации</h2>
         <form action="/add" method="POST">
@@ -169,9 +196,9 @@ HTML_TEMPLATE = '''
 def index():
     config = load_config()
     active_pair = next((p for p in config['pairs'] if p.get('is_active')), None)
-    # Проверяем связь при загрузке страницы
     api_connected = check_api_connection(config)
-    return render_template_string(HTML_TEMPLATE, config=config, active_pair=active_pair, api_connected=api_connected)
+    edit_mode = request.args.get('edit') == '1'
+    return render_template_string(HTML_TEMPLATE, config=config, active_pair=active_pair, api_connected=api_connected, edit_mode=edit_mode)
 
 @app.route('/add', methods=['POST'])
 def add_pair():
@@ -193,7 +220,22 @@ def delete_pair(index):
 @app.route('/save_settings', methods=['POST'])
 def save_settings():
     config = load_config()
-    config['panel_url'] = request.form.get('panel_url')
+    raw_url = request.form.get('panel_url', '').strip()
+    is_local = request.form.get('is_local')
+
+    config['display_url'] = raw_url
+    
+    if is_local == 'on':
+        try:
+            parsed = urlparse(raw_url)
+            port_str = f":{parsed.port}" if parsed.port else ""
+            # Заменяем домен на 127.0.0.1 для локального внутреннего доступа
+            config['panel_url'] = f"{parsed.scheme}://127.0.0.1{port_str}{parsed.path}"
+        except:
+            config['panel_url'] = raw_url
+    else:
+        config['panel_url'] = raw_url
+
     config['username'] = request.form.get('username')
     config['password'] = request.form.get('password')
     config['inbound_id'] = int(request.form.get('inbound_id'))
@@ -206,9 +248,9 @@ def core_api_request(config, active_session, endpoint, data=None):
     url = f"{config['panel_url'].rstrip('/')}{endpoint}"
     try:
         if data:
-            res = active_session.post(url, data=data, timeout=10)
+            res = active_session.post(url, data=data, timeout=5, verify=False)
         else:
-            res = active_session.post(url, timeout=10)
+            res = active_session.post(url, timeout=5, verify=False)
         return res.json()
     except Exception as e:
         print(f"[Ошибка API]: {e}")
@@ -218,7 +260,7 @@ def login_to_core(config, session):
     login_url = f"{config['panel_url'].rstrip('/')}/login"
     data = {"username": config['username'], "password": config['password']}
     try:
-        res = session.post(login_url, data=data, timeout=10)
+        res = session.post(login_url, data=data, timeout=5, verify=False)
         return res.status_code == 200
     except:
         return False
